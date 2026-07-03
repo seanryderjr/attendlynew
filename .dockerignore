@@ -1,0 +1,10 @@
+node_modules
+.git
+.env
+.env.*
+docker-compose.yml
+DEPLOYMENT.md
+READY_TO_RUN.md
+*.md
+start-attendly*
+stop-attendly*
