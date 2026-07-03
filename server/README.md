@@ -1,0 +1,11 @@
+API routes:
+- POST /api/auth/login
+- GET /api/dashboard
+- GET/POST /api/employees
+- PUT/DELETE /api/employees/:id
+- POST /api/kiosk/punch
+- GET/POST /api/punches
+- GET/POST /api/time-off
+- PATCH /api/time-off/:id/status
+- GET /api/reports/payroll
+- GET /api/reports/export.csv
