@@ -1,202 +1,29 @@
-import express from 'express';
-import pg from 'pg';
-import crypto from 'crypto';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const { Pool } = pg;
-const app = express();
-const PORT = process.env.PORT || 4000;
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-app.use(express.json({ limit: '1mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL?.includes('railway') || process.env.DATABASE_URL?.includes('render') || process.env.DATABASE_URL?.includes('neon') ? { rejectUnauthorized: false } : false
-});
-
-function hash(value, salt = crypto.randomBytes(16).toString('hex')) {
-  const digest = crypto.pbkdf2Sync(value, salt, 120000, 32, 'sha256').toString('hex');
-  return `${salt}:${digest}`;
+const express=require('express');const {Pool}=require('pg');const bcrypt=require('bcryptjs');const jwt=require('jsonwebtoken');
+const app=express();app.use(express.json({limit:'1mb'}));app.use(express.static('public'));
+const PORT=process.env.PORT||3000, SECRET=process.env.JWT_SECRET||'dev-secret-change-me';
+const pool=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.DATABASE_URL.includes('railway')?{rejectUnauthorized:false}:undefined}):null;
+let mem={employees:[],punches:[],pto:[],balances:[],audit:[],users:[]};
+const employees=[['Miguel Ortiz','Manager','3874','Active','Office','Full-Time','miguel@company.com','(555) 210-1001'],['Samantha Lee','Office','1936','Active','Office','Full-Time','samantha@company.com','(555) 210-1002'],['Derrick Moore','Technician','8421','Active','Field','Full-Time','derrick@company.com','(555) 210-1003'],['Ava Johnson','Technician','6109','Active','Field','Full-Time','ava@company.com','(555) 210-1004'],['Ethan Parker','Technician','4792','Active','Field','Full-Time','ethan@company.com','(555) 210-1005'],['Olivia Kim','Office','2548','Active','Admin','Part-Time','olivia@company.com','(555) 210-1006'],['Noah Williams','Technician','7315','Active','Field','Full-Time','noah@company.com','(555) 210-1007'],['Mia Thompson','Technician','9062','Active','Field','Full-Time','mia@company.com','(555) 210-1008'],['James Garcia','Manager','3187','Active','Operations','Full-Time','james@company.com','(555) 210-1009'],['Sophia Brown','Technician','6650','Active','Field','Part-Time','sophia@company.com','(555) 210-1010'],['Liam Davis','Technician','5284','Inactive','Field','Full-Time','liam@company.com','(555) 210-1011']];
+async function q(sql,p=[]){if(!pool)throw Error('no db');return (await pool.query(sql,p)).rows}
+async function init(){if(!pool){mem.employees=employees.map((e,i)=>({id:i+1,name:e[0],role:e[1],pin:e[2],status:e[3],department:e[4],pay_type:e[5],email:e[6],phone:e[7],created_at:new Date()}));mem.balances=mem.employees.map(e=>({employee_id:e.id,vacation:80,sick:40,personal:16}));mem.users=[{email:'admin@attendly.local',password:bcrypt.hashSync('admin123!',10)}];return}
+await q(`create table if not exists users(id serial primary key,email text unique,password text not null,role text default 'Admin');
+create table if not exists employees(id serial primary key,name text not null,role text not null,pin text unique not null,status text default 'Active',department text default 'Field',pay_type text default 'Full-Time',email text default '',phone text default '',created_at timestamptz default now());
+create table if not exists punches(id serial primary key,employee_id int references employees(id) on delete cascade,clock_in timestamptz not null,clock_out timestamptz,notes text default '');
+create table if not exists pto(id serial primary key,employee_id int references employees(id) on delete cascade,type text,start_date date,end_date date,hours numeric default 8,status text default 'Pending',reason text default '',created_at timestamptz default now());
+create table if not exists balances(employee_id int primary key references employees(id) on delete cascade,vacation numeric default 80,sick numeric default 40,personal numeric default 16);
+create table if not exists audit(id serial primary key,action text,detail text,created_at timestamptz default now());`);
+let u=await q('select id from users limit 1');if(!u.length)await q('insert into users(email,password) values($1,$2)',[process.env.ADMIN_EMAIL||'admin@attendly.local',bcrypt.hashSync(process.env.ADMIN_PASSWORD||'admin123!',10)]);
+let c=await q('select count(*)::int c from employees');if(!c[0].c){for(const e of employees){let r=await q('insert into employees(name,role,pin,status,department,pay_type,email,phone) values($1,$2,$3,$4,$5,$6,$7,$8) returning id',e);await q('insert into balances(employee_id) values($1)',[r[0].id])}}
 }
-function verify(value, stored) {
-  if (!stored || !stored.includes(':')) return false;
-  const [salt] = stored.split(':');
-  return hash(value, salt) === stored;
-}
-function token() { return crypto.randomBytes(24).toString('hex'); }
-
-const sessions = new Map();
-function requireAdmin(req, res, next) {
-  const auth = req.headers.authorization || '';
-  const t = auth.replace('Bearer ', '');
-  const user = sessions.get(t);
-  if (!user) return res.status(401).json({ error: 'Not logged in' });
-  req.user = user;
-  next();
-}
-
-async function q(sql, params = []) { return pool.query(sql, params); }
-
-async function initDb() {
-  await q(`CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
-    password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'ADMIN', created_at TIMESTAMPTZ DEFAULT now()
-  )`);
-  await q(`CREATE TABLE IF NOT EXISTS employees (
-    id SERIAL PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'EMPLOYEE',
-    pin_hash TEXT NOT NULL, pin_last4 TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ACTIVE',
-    pay_type TEXT NOT NULL DEFAULT 'Hourly', hourly_rate NUMERIC(10,2),
-    vacation_hours NUMERIC(10,2) NOT NULL DEFAULT 0, sick_hours NUMERIC(10,2) NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now()
-  )`);
-  await q(`CREATE TABLE IF NOT EXISTS punches (
-    id SERIAL PRIMARY KEY, employee_id INTEGER REFERENCES employees(id) ON DELETE CASCADE,
-    type TEXT NOT NULL, occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(), note TEXT, created_at TIMESTAMPTZ DEFAULT now()
-  )`);
-  await q(`CREATE TABLE IF NOT EXISTS time_off_requests (
-    id SERIAL PRIMARY KEY, employee_id INTEGER REFERENCES employees(id) ON DELETE CASCADE,
-    start_date DATE NOT NULL, end_date DATE NOT NULL, hours NUMERIC(10,2) NOT NULL,
-    type TEXT NOT NULL, reason TEXT, status TEXT NOT NULL DEFAULT 'PENDING', manager_note TEXT,
-    created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now()
-  )`);
-
-  const admin = await q('SELECT id FROM users LIMIT 1');
-  if (admin.rowCount === 0) {
-    await q('INSERT INTO users (email,name,password_hash,role) VALUES ($1,$2,$3,$4)', [
-      process.env.ADMIN_EMAIL || 'admin@attendly.local', 'Admin', hash(process.env.ADMIN_PASSWORD || 'admin123!'), 'ADMIN'
-    ]);
-  }
-  const employees = await q('SELECT id FROM employees LIMIT 1');
-  if (employees.rowCount === 0) {
-    const seed = [
-      ['Phillip Cuffy','Flat Rate Technician','8659','Flat Rate'],
-      ['Kainat Imtiaz','Office','8545','Hourly'],
-      ['Lyn Ford','Office','6548','Hourly'],
-      ['Sadie Henry','Parts','9865','Hourly'],
-      ['Linda Cardarelli','Hourly Technician','7532','Hourly'],
-      ['Tony Cardarelli','Flat Rate Technician','9999','Flat Rate'],
-      ['Corey Holloman','Hourly Technician','7777','Hourly'],
-      ['Justin Bishop','Flat Rate Technician','0123','Flat Rate'],
-      ['Dylan Rower','Hourly Technician','0000','Hourly'],
-      ['Andrew Blades','Manager','1234','Salary'],
-      ['Sean Ryder','Manager','6386','Salary']
-    ];
-    for (const [name, role, pin, pay_type] of seed) {
-      await q('INSERT INTO employees (name,role,pin_hash,pin_last4,pay_type,vacation_hours,sick_hours) VALUES ($1,$2,$3,$4,$5,$6,$7)', [name, role, hash(pin), pin, pay_type, 40, 24]);
-    }
-  }
-}
-
-app.get('/api/health', async (req,res)=> {
-  try { await q('select 1'); res.json({ ok:true }); } catch(e) { res.status(500).json({ ok:false, error:e.message }); }
-});
-app.post('/api/login', async (req,res)=> {
-  const { email, password } = req.body;
-  const r = await q('SELECT * FROM users WHERE email=$1', [email]);
-  if (!r.rowCount || !verify(password, r.rows[0].password_hash)) return res.status(401).json({ error:'Bad login' });
-  const t = token(); sessions.set(t, { id:r.rows[0].id, email:r.rows[0].email, name:r.rows[0].name });
-  res.json({ token:t, user:sessions.get(t) });
-});
-app.get('/api/employees', requireAdmin, async (req,res)=> {
-  const r = await q('SELECT id,name,role,pin_last4,status,pay_type,hourly_rate,vacation_hours,sick_hours,created_at FROM employees ORDER BY name');
-  res.json(r.rows);
-});
-app.post('/api/employees', requireAdmin, async (req,res)=> {
-  const { name, role='EMPLOYEE', pin, status='ACTIVE', pay_type='Hourly', hourly_rate=null } = req.body;
-  if (!name || !pin) return res.status(400).json({error:'Name and PIN required'});
-  const r = await q('INSERT INTO employees (name,role,pin_hash,pin_last4,status,pay_type,hourly_rate) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *', [name, role, hash(pin), String(pin).slice(-4), status, pay_type, hourly_rate]);
-  res.json(r.rows[0]);
-});
-app.put('/api/employees/:id', requireAdmin, async (req,res)=> {
-  const { name, role, status, pay_type, hourly_rate, vacation_hours, sick_hours, pin } = req.body;
-  const old = await q('SELECT * FROM employees WHERE id=$1',[req.params.id]); if(!old.rowCount) return res.status(404).json({error:'Not found'});
-  const pinHash = pin ? hash(pin) : old.rows[0].pin_hash; const pinLast = pin ? String(pin).slice(-4) : old.rows[0].pin_last4;
-  const r = await q(`UPDATE employees SET name=$1, role=$2, status=$3, pay_type=$4, hourly_rate=$5, vacation_hours=$6, sick_hours=$7, pin_hash=$8, pin_last4=$9, updated_at=now() WHERE id=$10 RETURNING *`,
-    [name??old.rows[0].name, role??old.rows[0].role, status??old.rows[0].status, pay_type??old.rows[0].pay_type, hourly_rate??old.rows[0].hourly_rate, vacation_hours??old.rows[0].vacation_hours, sick_hours??old.rows[0].sick_hours, pinHash, pinLast, req.params.id]);
-  res.json(r.rows[0]);
-});
-app.delete('/api/employees/:id', requireAdmin, async (req,res)=> { await q('DELETE FROM employees WHERE id=$1',[req.params.id]); res.json({ok:true}); });
-
-app.post('/api/kiosk/login', async (req,res)=> {
-  const { pin } = req.body;
-  const r = await q("SELECT id,name,role,status,pin_hash,pin_last4,vacation_hours,sick_hours FROM employees WHERE status='ACTIVE'");
-  const emp = r.rows.find(e => verify(String(pin), e.pin_hash));
-  if (!emp) return res.status(401).json({ error:'Invalid PIN' });
-  const last = await q('SELECT type,occurred_at FROM punches WHERE employee_id=$1 ORDER BY occurred_at DESC LIMIT 1',[emp.id]);
-  const recent = await q('SELECT type,occurred_at,note FROM punches WHERE employee_id=$1 ORDER BY occurred_at DESC LIMIT 8',[emp.id]);
-  const requests = await q('SELECT * FROM time_off_requests WHERE employee_id=$1 ORDER BY created_at DESC LIMIT 8',[emp.id]);
-  res.json({ employee:{id:emp.id,name:emp.name,role:emp.role,vacation_hours:emp.vacation_hours,sick_hours:emp.sick_hours}, clockedIn:last.rowCount && last.rows[0].type==='CLOCK_IN', lastPunch:last.rows[0]||null, recent:recent.rows, requests:requests.rows });
-});
-
-app.post('/api/kiosk/timeoff', async (req,res)=> {
-  const { pin, start_date, end_date, hours, type, reason='' } = req.body;
-  const r = await q("SELECT * FROM employees WHERE status='ACTIVE'");
-  const emp = r.rows.find(e => verify(String(pin), e.pin_hash));
-  if (!emp) return res.status(401).json({ error:'Invalid PIN' });
-  const created = await q('INSERT INTO time_off_requests (employee_id,start_date,end_date,hours,type,reason) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',[emp.id,start_date,end_date,hours,type,reason]);
-  res.json(created.rows[0]);
-});
-
-app.post('/api/kiosk/punch', async (req,res)=> {
-  const { pin, note='' } = req.body;
-  const r = await q("SELECT * FROM employees WHERE status='ACTIVE'");
-  const emp = r.rows.find(e => verify(String(pin), e.pin_hash));
-  if (!emp) return res.status(401).json({ error:'Invalid PIN' });
-  const last = await q('SELECT type FROM punches WHERE employee_id=$1 ORDER BY occurred_at DESC LIMIT 1',[emp.id]);
-  const type = last.rowCount && last.rows[0].type === 'CLOCK_IN' ? 'CLOCK_OUT' : 'CLOCK_IN';
-  const p = await q('INSERT INTO punches (employee_id,type,note) VALUES ($1,$2,$3) RETURNING *',[emp.id,type,note]);
-  res.json({ employee: { id:emp.id, name:emp.name }, punch:p.rows[0] });
-});
-app.get('/api/punches', requireAdmin, async (req,res)=> {
-  const r = await q(`SELECT p.*, e.name employee_name FROM punches p JOIN employees e ON e.id=p.employee_id ORDER BY p.occurred_at DESC LIMIT 500`);
-  res.json(r.rows);
-});
-app.get('/api/timeoff', requireAdmin, async (req,res)=> {
-  const r = await q(`SELECT t.*, e.name employee_name FROM time_off_requests t JOIN employees e ON e.id=t.employee_id ORDER BY t.created_at DESC`);
-  res.json(r.rows);
-});
-app.post('/api/timeoff', requireAdmin, async (req,res)=> {
-  const { employee_id, start_date, end_date, hours, type, reason='' } = req.body;
-  const r = await q('INSERT INTO time_off_requests (employee_id,start_date,end_date,hours,type,reason) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',[employee_id,start_date,end_date,hours,type,reason]);
-  res.json(r.rows[0]);
-});
-app.put('/api/timeoff/:id', requireAdmin, async (req,res)=> {
-  const { status, manager_note='' } = req.body;
-  const r = await q('UPDATE time_off_requests SET status=$1, manager_note=$2, updated_at=now() WHERE id=$3 RETURNING *',[status,manager_note,req.params.id]);
-  res.json(r.rows[0]);
-});
-app.get('/api/dashboard', requireAdmin, async (req,res)=> {
-  const [employees,punches,pending,total] = await Promise.all([
-    q("SELECT count(*)::int c FROM employees WHERE status='ACTIVE'"),
-    q("SELECT count(*)::int c FROM punches WHERE occurred_at::date=current_date"),
-    q("SELECT count(*)::int c FROM time_off_requests WHERE status='PENDING'"),
-    q('SELECT count(*)::int c FROM employees')
-  ]);
-  res.json({ activeEmployees:employees.rows[0].c, todayPunches:punches.rows[0].c, pendingRequests:pending.rows[0].c, totalEmployees:total.rows[0].c });
-});
-app.get('/api/reports/summary', requireAdmin, async (req,res)=> {
-  const [byRole, recent, pto] = await Promise.all([
-    q('SELECT role, count(*)::int count FROM employees GROUP BY role ORDER BY role'),
-    q(`SELECT e.name, p.type, p.occurred_at FROM punches p JOIN employees e ON e.id=p.employee_id ORDER BY p.occurred_at DESC LIMIT 12`),
-    q('SELECT status, count(*)::int count FROM time_off_requests GROUP BY status ORDER BY status')
-  ]);
-  res.json({ byRole:byRole.rows, recent:recent.rows, pto:pto.rows });
-});
-
-app.get('/api/export/punches.csv', requireAdmin, async (req,res)=> {
-  const r = await q(`SELECT e.name,p.type,p.occurred_at,p.note FROM punches p JOIN employees e ON e.id=p.employee_id ORDER BY p.occurred_at DESC`);
-  res.setHeader('Content-Type','text/csv'); res.setHeader('Content-Disposition','attachment; filename="punches.csv"');
-  res.write('Employee,Type,Time,Note\n');
-  for (const row of r.rows) res.write([row.name,row.type,row.occurred_at,row.note||''].map(v => `"${String(v).replaceAll('"','""')}"`).join(',')+'\n');
-  res.end();
-});
-
-app.get('*', (req,res)=> res.sendFile(path.join(__dirname,'public','index.html')));
-
-initDb().then(()=> app.listen(PORT, '0.0.0.0', () => console.log(`Attendly running on ${PORT}`))).catch(err => {
-  console.error('Startup failed:', err.message);
-  app.listen(PORT, '0.0.0.0', () => console.log(`Attendly running but database failed: ${err.message}`));
-});
+function auth(req,res,next){let h=req.headers.authorization||'';try{req.user=jwt.verify(h.replace('Bearer ',''),SECRET);next()}catch(e){res.status(401).json({error:'Unauthorized'})}}
+function memId(a){return Math.max(0,...a.map(x=>x.id||0))+1}
+app.post('/api/login',async(req,res)=>{let {email,password}=req.body;if(pool){let r=await q('select * from users where email=$1',[email]);if(r[0]&&bcrypt.compareSync(password,r[0].password))return res.json({token:jwt.sign({email,role:r[0].role},SECRET),email})}else{let u=mem.users.find(u=>u.email===email);if(u&&bcrypt.compareSync(password,u.password))return res.json({token:jwt.sign({email},SECRET),email})}res.status(401).json({error:'Invalid login'})});
+app.get('/api/data',auth,async(req,res)=>{let data=pool?{employees:await q('select * from employees order by status,name'),punches:await q('select p.*,e.name employee,e.role from punches p join employees e on e.id=p.employee_id order by coalesce(clock_out,clock_in) desc limit 500'),pto:await q('select p.*,e.name employee from pto p join employees e on e.id=p.employee_id order by created_at desc'),balances:await q('select b.*,e.name employee from balances b join employees e on e.id=b.employee_id order by e.name')}:mem;res.json(data)});
+app.post('/api/employees',auth,async(req,res)=>{let b=req.body;if(pool){let r=await q('insert into employees(name,role,pin,status,department,pay_type,email,phone) values($1,$2,$3,$4,$5,$6,$7,$8) returning *',[b.name,b.role,b.pin,b.status||'Active',b.department||'',b.pay_type||'Full-Time',b.email||'',b.phone||'']);await q('insert into balances(employee_id) values($1)',[r[0].id]);return res.json(r[0])}b.id=memId(mem.employees);mem.employees.push(b);mem.balances.push({employee_id:b.id,vacation:80,sick:40,personal:16});res.json(b)});
+app.put('/api/employees/:id',auth,async(req,res)=>{let id=+req.params.id,b=req.body;if(pool)return res.json((await q('update employees set name=$1,role=$2,pin=$3,status=$4,department=$5,pay_type=$6,email=$7,phone=$8 where id=$9 returning *',[b.name,b.role,b.pin,b.status,b.department,b.pay_type,b.email,b.phone,id]))[0]);Object.assign(mem.employees.find(e=>e.id==id),b);res.json({ok:true})});
+app.post('/api/punch',async(req,res)=>{let {pin,employee_id,notes}=req.body;let emp;if(pool){emp=(await q('select * from employees where pin=$1 or id=$2',[pin||'',employee_id||0]))[0];if(!emp)return res.status(404).json({error:'PIN not found'});let open=(await q('select * from punches where employee_id=$1 and clock_out is null order by id desc limit 1',[emp.id]))[0];if(open){await q('update punches set clock_out=now(),notes=$2 where id=$1',[open.id,notes||'']);return res.json({message:`${emp.name} clocked out`})}await q('insert into punches(employee_id,clock_in,notes) values($1,now(),$2)',[emp.id,notes||'']);return res.json({message:`${emp.name} clocked in`})}emp=mem.employees.find(e=>e.pin==pin||e.id==employee_id);if(!emp)return res.status(404).json({error:'PIN not found'});let open=mem.punches.find(p=>p.employee_id==emp.id&&!p.clock_out);if(open){open.clock_out=new Date();return res.json({message:`${emp.name} clocked out`})}mem.punches.push({id:memId(mem.punches),employee_id:emp.id,employee:emp.name,clock_in:new Date(),clock_out:null,notes:notes||''});res.json({message:`${emp.name} clocked in`})});
+app.post('/api/pto',async(req,res)=>{let b=req.body;if(pool){let emp=(await q('select id,name from employees where pin=$1 or id=$2',[b.pin||'',b.employee_id||0]))[0];if(!emp)return res.status(404).json({error:'Employee not found'});let r=await q('insert into pto(employee_id,type,start_date,end_date,hours,reason,status) values($1,$2,$3,$4,$5,$6,$7) returning *',[emp.id,b.type,b.start_date,b.end_date,b.hours||8,b.reason||'',b.status||'Pending']);return res.json(r[0])}res.json({ok:true})});
+app.put('/api/pto/:id',auth,async(req,res)=>{let id=+req.params.id,{status}=req.body;if(pool){let r=(await q('update pto set status=$1 where id=$2 returning *',[status,id]))[0];if(status==='Approved'&&r){let col=r.type==='Sick'?'sick':r.type==='Personal'?'personal':'vacation';await q(`update balances set ${col}=greatest(0,${col}-$1) where employee_id=$2`,[r.hours,r.employee_id])}return res.json(r)}res.json({ok:true})});
+app.delete('/api/punches/:id',auth,async(req,res)=>{if(pool)await q('delete from punches where id=$1',[req.params.id]);else mem.punches=mem.punches.filter(p=>p.id!=req.params.id);res.json({ok:true})});
+app.get('*',(req,res)=>res.sendFile(__dirname+'/public/index.html'));
+init().then(()=>app.listen(PORT,'0.0.0.0',()=>console.log('Attendly running on '+PORT))).catch(e=>{console.error(e);process.exit(1)});

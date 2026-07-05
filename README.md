@@ -1,23 +1,10 @@
-# Attendly Base44-Style Railway App
+# Attendly Base44 Rebuild
+Railway-ready Express + PostgreSQL app.
 
-A cleaner Base44-style rebuild of Attendly with a mobile kiosk, admin dashboard, employee management, punches, PTO, balances, reports, PostgreSQL storage, and a simple Node/Express server.
+Environment variables:
+- DATABASE_URL (Railway Postgres)
+- JWT_SECRET (any long random text)
+- ADMIN_EMAIL (optional, default admin@attendly.local)
+- ADMIN_PASSWORD (optional, default admin123!)
 
-## Railway
-
-Required variables:
-
-```
-DATABASE_URL=<Railway PostgreSQL URL>
-ADMIN_EMAIL=admin@attendly.local
-ADMIN_PASSWORD=admin123!
-NODE_ENV=production
-```
-
-Railway should detect the Dockerfile and run the app. If it asks for a port, use `4000` or leave it to Railway's `PORT` variable.
-
-## Login
-
-```
-admin@attendly.local
-admin123!
-```
+Start command: `npm start`
